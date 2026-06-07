@@ -2,7 +2,7 @@
 
 import { ShaderAnimation } from "@/components/ui/shader-animation"
 import { LiquidButton } from "@/components/ui/liquid-glass-button"
-import { AlertCircle, Briefcase, Eye, EyeOff, Lock, Mail, User } from "lucide-react"
+import { AlertCircle, Briefcase, Eye, EyeOff, Lock, User } from "lucide-react"
 import Link from "next/link"
 import { useState, useTransition } from "react"
 import { signUp } from "@/app/actions/auth"
@@ -88,27 +88,6 @@ export default function RegisterPage() {
               <p className="text-[10px] text-white/30">Letters, numbers, underscores only · 3–30 chars</p>
             </div>
 
-            {/* Email — optional */}
-            <div className="space-y-1.5">
-              <label htmlFor="register-email" className="text-xs font-medium text-white/70 uppercase tracking-wide">
-                Email <span className="text-white/30 normal-case">(optional — for password recovery)</span>
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 pointer-events-none" />
-                <input
-                  id="register-email"
-                  name="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  disabled={isPending}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl text-sm text-white placeholder-white/30 outline-none transition-all duration-200
-                    bg-white/10 border border-white/20
-                    focus:border-blue-400/60 focus:bg-white/15 focus:ring-2 focus:ring-blue-400/20
-                    hover:border-white/30 disabled:opacity-60"
-                />
-              </div>
-            </div>
 
             {/* Password */}
             <div className="space-y-1.5">
