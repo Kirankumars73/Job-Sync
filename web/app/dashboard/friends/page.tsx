@@ -9,16 +9,15 @@ import { LiquidButton } from "@/components/ui/liquid-glass-button"
 import { useUser } from "@/lib/context/UserContext"
 import {
   sendFriendRequest,
-  getMyFriends,
-  getPendingRequests,
   acceptFriendRequest,
   rejectFriendRequest,
   removeFriend,
 } from "@/app/actions/friends"
+import { supabase } from "@/lib/supabase/client"
 import type { Friendship, FriendRequest } from "@/lib/types/database"
 
 export default function FriendsPage() {
-  const { profile } = useUser()
+  const { user, profile } = useUser()
   const [search, setSearch] = useState("")
   const [friendCode, setFriendCode] = useState("")
   const [isPending, startTransition] = useTransition()
@@ -29,14 +28,32 @@ export default function FriendsPage() {
   const [loading,  setLoading]  = useState(true)
 
   const refresh = useCallback(async () => {
+    if (!user) return
     setLoading(true)
-    const [f, r] = await Promise.all([getMyFriends(), getPendingRequests()])
-    setFriends(f  as unknown as Friendship[])
-    setRequests(r as unknown as FriendRequest[])
-    setLoading(false)
-  }, [])
 
-  useEffect(() => { if (profile) refresh() }, [profile, refresh])
+    const [{ data: friendsData, error: fErr }, { data: reqData, error: rErr }] = await Promise.all([
+      supabase
+        .from("friendships")
+        .select("*, friend:profiles!friendships_friend_id_fkey(id, username, friend_code, avatar_url)")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("friend_requests")
+        .select("*, sender:profiles!friend_requests_sender_id_fkey(id, username, avatar_url)")
+        .eq("receiver_id", user.id)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false }),
+    ])
+
+    if (fErr) console.error("[friends refresh] friendships error:", fErr)
+    if (rErr) console.error("[friends refresh] requests error:", rErr)
+
+    setFriends((friendsData ?? []) as unknown as Friendship[])
+    setRequests((reqData ?? []) as unknown as FriendRequest[])
+    setLoading(false)
+  }, [user])
+
+  useEffect(() => { if (user) refresh() }, [user, refresh])
 
   const handleSendRequest = (e: React.FormEvent) => {
     e.preventDefault()

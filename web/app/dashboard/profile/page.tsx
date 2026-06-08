@@ -7,9 +7,10 @@ import {
 import { useState, useEffect, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import { useUser } from "@/lib/context/UserContext"
-import { getMyApplications, getApplicationStats, updateApplicationStatus } from "@/app/actions/applications"
+import { updateApplicationStatus } from "@/app/actions/applications"
+import { supabase } from "@/lib/supabase/client"
 import { getMyGroups } from "@/app/actions/groups"
-import type { Application } from "@/lib/types/database"
+import type { Application, Group } from "@/lib/types/database"
 
 const statusColors: Record<string, string> = {
   applied:     "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
@@ -41,7 +42,7 @@ const breakdownItems = [
 ]
 
 export default function ProfilePage() {
-  const { profile, loading: userLoading } = useUser()
+  const { user, profile, loading: userLoading } = useUser()
   const [copied, setCopied] = useState(false)
   const [activeFilter, setActiveFilter] = useState("All")
   const [apps,   setApps]   = useState<Application[]>([])
@@ -51,19 +52,35 @@ export default function ProfilePage() {
   const [updatingId, setUpdatingId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
+    if (!user) return
     setLoadingData(true)
-    const [appsData, groupsData, statsData] = await Promise.all([
-      getMyApplications(),
-      getMyGroups(),
-      getApplicationStats(),
-    ])
-    setApps(appsData as unknown as Application[])
-    setGroups((groupsData.filter(Boolean) as unknown) as typeof groups)
-    setStats(statsData)
-    setLoadingData(false)
-  }, [])
 
-  useEffect(() => { if (profile) refresh() }, [profile, refresh])
+    // Applications — direct browser client query
+    const { data: appsData, error: appsError } = await supabase
+      .from("applications")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+
+    if (appsError) console.error("[profile refresh] apps error:", appsError)
+
+    const myApps = (appsData ?? []) as Application[]
+    setApps(myApps)
+    setStats({
+      applied:   myApps.length,
+      interview: myApps.filter((a) => a.status === "interview").length,
+      offer:     myApps.filter((a) => a.status === "offer").length,
+      pending:   myApps.filter((a) => ["applied", "oa_received"].includes(a.status)).length,
+    })
+
+    // Groups — still via server action (needs complex join)
+    const groupsData = await getMyGroups()
+    setGroups((groupsData.filter(Boolean) as unknown) as typeof groups)
+
+    setLoadingData(false)
+  }, [user])
+
+  useEffect(() => { if (user) refresh() }, [user, refresh])
 
   const handleCopy = () => {
     if (!profile) return
@@ -199,7 +216,7 @@ export default function ProfilePage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{app.company_name ?? "Unknown"}</p>
                     <p className="text-xs text-muted-foreground truncate">
-                      {app.role ?? new URL(app.canonical_url).hostname}
+                      {app.role ?? (() => { try { return new URL(app.canonical_url).hostname } catch { return app.canonical_url } })()}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

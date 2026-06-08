@@ -22,7 +22,7 @@ const groupGradients = [
 ]
 
 export default function GroupsPage() {
-  const { profile } = useUser()
+  const { user, profile } = useUser()
   const [tab, setTab] = useState<"my" | "create" | "join">("my")
   const [groups, setGroups] = useState<GroupEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,7 +40,7 @@ export default function GroupsPage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { if (profile) refresh() }, [profile, refresh])
+  useEffect(() => { if (user) refresh() }, [user, refresh])
 
   const showMsg = (type: "success" | "error", text: string) => {
     setMsg({ type, text })

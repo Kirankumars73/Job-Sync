@@ -20,7 +20,7 @@ const navLinks = [
 
 export default function Navbar() {
   const pathname = usePathname()
-  const { profile, loading } = useUser()
+  const { user, profile, loading } = useUser()
   const [notifOpen,   setNotifOpen]   = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [notifications, setNotifications] = useState<Notification[]>([])
@@ -28,14 +28,15 @@ export default function Navbar() {
 
   // Load + subscribe to notifications
   useEffect(() => {
-    if (!profile) return
+    const uid = profile?.id ?? user?.id
+    if (!uid) return
     const supabase = createClient()
 
     // Initial fetch
     supabase
       .from("notifications")
       .select("*, sender:profiles!notifications_sender_id_fkey(username)")
-      .eq("recipient_id", profile.id)
+      .eq("recipient_id", uid)
       .order("created_at", { ascending: false })
       .limit(10)
       .then(({ data }) => {
@@ -47,10 +48,10 @@ export default function Navbar() {
 
     // Real-time subscription
     const channel = supabase
-      .channel("notifications-" + profile.id)
+      .channel("notifications-" + uid)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "notifications", filter: `recipient_id=eq.${profile.id}` },
+        { event: "INSERT", schema: "public", table: "notifications", filter: `recipient_id=eq.${uid}` },
         (payload) => {
           setNotifications((prev) => [payload.new as Notification, ...prev.slice(0, 9)])
           setUnreadCount((c) => c + 1)
@@ -59,21 +60,27 @@ export default function Navbar() {
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
-  }, [profile])
+  }, [profile?.id ?? user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const markAllRead = async () => {
-    if (!profile) return
+    const uid = profile?.id ?? user?.id
+    if (!uid) return
     const supabase = createClient()
     await supabase
       .from("notifications")
       .update({ is_read: true, read_at: new Date().toISOString() })
-      .eq("recipient_id", profile.id)
+      .eq("recipient_id", uid)
       .eq("is_read", false)
     setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
     setUnreadCount(0)
   }
 
-  const avatarInitial = profile?.username?.[0]?.toUpperCase() ?? "?"
+  // Show username from profile; fall back to email prefix from user metadata while profile loads
+  const displayName = profile?.username
+    ?? (user?.user_metadata?.username as string | undefined)
+    ?? (loading ? null : "Account")
+
+  const avatarInitial = displayName?.[0]?.toUpperCase() ?? (loading ? "…" : "?")
 
   const notifTypeLabel: Record<string, string> = {
     friend_request_received:  "sent you a friend request",
@@ -189,10 +196,12 @@ export default function Navbar() {
               className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl glass hover:bg-muted/40 transition-colors"
             >
               <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-400 to-indigo-600 flex items-center justify-center text-white text-xs font-bold">
-                {loading ? "…" : avatarInitial}
+                {loading && !displayName ? "…" : avatarInitial}
               </div>
               <span className="text-sm font-medium hidden sm:block max-w-[100px] truncate">
-                {loading ? "…" : (profile?.username ?? "Account")}
+                {loading && !displayName
+                  ? <span className="inline-block w-16 h-3 rounded bg-muted/60 animate-pulse" />
+                  : displayName}
               </span>
               <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0", profileOpen && "rotate-180")} />
             </button>

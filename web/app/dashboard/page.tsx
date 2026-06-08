@@ -2,7 +2,7 @@
 
 import { LiquidButton } from "@/components/ui/liquid-glass-button"
 import { useUser } from "@/lib/context/UserContext"
-import { addApplication, getMyApplications, getFriendActivity, getApplicationStats } from "@/app/actions/applications"
+import { addApplication } from "@/app/actions/applications"
 import {
   Briefcase, CheckCircle2, Clock, ExternalLink, Link2,
   Plus, TrendingUp, Users, Zap, RefreshCw,
@@ -10,7 +10,7 @@ import {
 import { useState, useEffect, useTransition, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import type { Application } from "@/lib/types/database"
-import { createClient } from "@/lib/supabase/client"
+import { createClient, supabase } from "@/lib/supabase/client"
 
 const statusColors: Record<string, string> = {
   applied:      "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
@@ -28,7 +28,7 @@ const statusLabel: Record<string, string> = {
 }
 
 export default function DashboardPage() {
-  const { profile, loading: userLoading } = useUser()
+  const { user, profile, loading: userLoading } = useUser()
   const [url, setUrl] = useState("")
   const [urlError, setUrlError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -40,27 +40,61 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true)
 
   const refresh = useCallback(async () => {
+    if (!user) return
     setLoadingData(true)
-    const [appsData, activityData, statsData] = await Promise.all([
-      getMyApplications(),
-      getFriendActivity(),
-      getApplicationStats(),
-    ])
-    setApps(appsData as unknown as Application[])
-    setFriendActivity(activityData as unknown as (Application & { profiles?: { username: string } })[])
-    setStats(statsData)
+
+    // ── My Applications ──────────────────────────────────────
+    const { data: appsData } = await supabase
+      .from("applications")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+
+    const myApps = (appsData ?? []) as Application[]
+    setApps(myApps)
+
+    // ── Stats (derived from myApps) ───────────────────────────
+    setStats({
+      applied:   myApps.length,
+      interview: myApps.filter((a) => a.status === "interview").length,
+      offer:     myApps.filter((a) => a.status === "offer").length,
+      pending:   myApps.filter((a) => ["applied", "oa_received"].includes(a.status)).length,
+    })
+
+
+    // ── Friend Activity ──────────────────────────────────────
+    const { data: friendships } = await supabase
+      .from("friendships")
+      .select("friend_id")
+      .eq("user_id", user.id)
+
+    if (friendships?.length) {
+      const friendIds = (friendships as { friend_id: string }[]).map((f) => f.friend_id)
+      const { data: activityData } = await supabase
+        .from("applications")
+        .select("*, profiles:profiles!applications_user_id_fkey(username, avatar_url)")
+        .in("user_id", friendIds)
+        .in("visibility", ["friends", "public"])
+        .order("created_at", { ascending: false })
+        .limit(20)
+      setFriendActivity((activityData ?? []) as unknown as (Application & { profiles?: { username: string } })[])
+    } else {
+      setFriendActivity([])
+    }
+
     setLoadingData(false)
-  }, [])
+  }, [user])
 
   useEffect(() => {
-    if (!profile) return
+    // Gate on user (auth), not profile — profile can lag behind briefly
+    if (!user && !userLoading) return
+    if (userLoading) return
     refresh()
-  }, [profile, refresh])
+  }, [user, userLoading, refresh])
 
   // Real-time: listen for new applications (own + friends')
   useEffect(() => {
-    if (!profile) return
-    const supabase = createClient()
+    if (!user) return
     const channel = supabase
       .channel("apps-feed")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "applications" }, () => {
@@ -68,7 +102,7 @@ export default function DashboardPage() {
       })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [profile, refresh])
+  }, [user, refresh])
 
   const handleAddJob = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -222,7 +256,7 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{app.company_name ?? "Unknown company"}</p>
-                    <p className="text-xs text-muted-foreground truncate">{app.role ?? new URL(app.canonical_url).hostname}</p>
+                    <p className="text-xs text-muted-foreground truncate">{app.role ?? (() => { try { return new URL(app.canonical_url).hostname } catch { return app.canonical_url } })()}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={cn("text-[10px] font-medium px-2 py-0.5 rounded-full", statusColors[app.status])}>
