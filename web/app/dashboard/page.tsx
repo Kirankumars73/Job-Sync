@@ -2,15 +2,15 @@
 
 import { LiquidButton } from "@/components/ui/liquid-glass-button"
 import { useUser } from "@/lib/context/UserContext"
-import { addApplication } from "@/app/actions/applications"
+import { addApplication, updateApplicationStatus } from "@/app/actions/applications"
 import {
   Briefcase, CheckCircle2, Clock, ExternalLink, Link2,
-  Plus, TrendingUp, Users, Zap, RefreshCw,
+  Plus, TrendingUp, Users, Zap, RefreshCw, ChevronRight, X,
 } from "lucide-react"
 import { useState, useEffect, useTransition, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import type { Application } from "@/lib/types/database"
-import { createClient, supabase } from "@/lib/supabase/client"
+import { supabase } from "@/lib/supabase/client"
 
 const statusColors: Record<string, string> = {
   applied:      "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
@@ -27,6 +27,10 @@ const statusLabel: Record<string, string> = {
   offer: "Offer", rejected: "Rejected", withdrawn: "Withdrawn", no_response: "No Response",
 }
 
+const allStatuses = ["applied", "oa_received", "interview", "offer", "rejected", "withdrawn", "no_response"]
+
+type FriendApp = Application & { profiles?: { username: string; avatar_url?: string } }
+
 export default function DashboardPage() {
   const { user, profile, loading: userLoading } = useUser()
   const [url, setUrl] = useState("")
@@ -35,9 +39,13 @@ export default function DashboardPage() {
   const [submitted, setSubmitted] = useState(false)
 
   const [apps, setApps] = useState<Application[]>([])
-  const [friendActivity, setFriendActivity] = useState<(Application & { profiles?: { username: string } })[]>([])
+  const [friendActivity, setFriendActivity] = useState<FriendApp[]>([])
   const [stats, setStats] = useState({ applied: 0, interview: 0, offer: 0, pending: 0 })
   const [loadingData, setLoadingData] = useState(true)
+  const [updatingId, setUpdatingId] = useState<string | null>(null)
+
+  // Selected friend to filter activity
+  const [selectedFriend, setSelectedFriend] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!user) return
@@ -52,8 +60,6 @@ export default function DashboardPage() {
 
     const myApps = (appsData ?? []) as Application[]
     setApps(myApps)
-
-    // ── Stats (derived from myApps) ───────────────────────────
     setStats({
       applied:   myApps.length,
       interview: myApps.filter((a) => a.status === "interview").length,
@@ -61,8 +67,7 @@ export default function DashboardPage() {
       pending:   myApps.filter((a) => ["applied", "oa_received"].includes(a.status)).length,
     })
 
-
-    // ── Friend Activity ──────────────────────────────────────
+    // ── Friend Activity ───────────────────────────────────────
     const { data: friendships } = await supabase
       .from("friendships")
       .select("friend_id")
@@ -76,8 +81,8 @@ export default function DashboardPage() {
         .in("user_id", friendIds)
         .in("visibility", ["friends", "public"])
         .order("created_at", { ascending: false })
-        .limit(20)
-      setFriendActivity((activityData ?? []) as unknown as (Application & { profiles?: { username: string } })[])
+        .limit(50)
+      setFriendActivity((activityData ?? []) as unknown as FriendApp[])
     } else {
       setFriendActivity([])
     }
@@ -86,18 +91,17 @@ export default function DashboardPage() {
   }, [user])
 
   useEffect(() => {
-    // Gate on user (auth), not profile — profile can lag behind briefly
     if (!user && !userLoading) return
     if (userLoading) return
     refresh()
   }, [user, userLoading, refresh])
 
-  // Real-time: listen for new applications (own + friends')
+  // Real-time updates
   useEffect(() => {
     if (!user) return
     const channel = supabase
       .channel("apps-feed")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "applications" }, () => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "applications" }, () => {
         refresh()
       })
       .subscribe()
@@ -120,12 +124,28 @@ export default function DashboardPage() {
     })
   }
 
+  const handleStatusChange = async (id: string, status: string) => {
+    setUpdatingId(id)
+    await updateApplicationStatus(id, status)
+    setApps((prev) => prev.map((a) => a.id === id ? { ...a, status: status as Application["status"] } : a))
+    setUpdatingId(null)
+  }
+
   const greeting = () => {
     const h = new Date().getHours()
     if (h < 12) return "Good morning"
     if (h < 17) return "Good afternoon"
     return "Good evening"
   }
+
+  // Unique friends from activity for the filter sidebar
+  const uniqueFriends = Array.from(
+    new Map(friendActivity.map((a) => [a.user_id, a.profiles])).entries()
+  ).map(([id, p]) => ({ id, username: p?.username ?? "?" }))
+
+  const filteredActivity = selectedFriend
+    ? friendActivity.filter((a) => a.user_id === selectedFriend)
+    : friendActivity
 
   return (
     <div className="space-y-6">
@@ -138,7 +158,7 @@ export default function DashboardPage() {
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {stats.applied > 0
-              ? `${stats.applied} applications tracked · ${friendActivity.length} new from your network`
+              ? `${stats.applied} applications tracked · ${friendActivity.length} from your network`
               : "Paste a job URL below to start tracking"}
           </p>
         </div>
@@ -179,24 +199,26 @@ export default function DashboardPage() {
           <LiquidButton
             id="dashboard-add-job-btn"
             type="submit"
-            size="default"
             disabled={isPending || !url.trim()}
-            className={cn("text-foreground font-medium px-5 h-10", submitted && "text-emerald-500")}
+            size="default"
+            className="h-10 px-5 text-foreground font-medium shrink-0"
           >
-            {isPending ? (
-              <span className="w-4 h-4 border-2 border-muted-foreground/30 border-t-foreground rounded-full animate-spin" />
-            ) : submitted ? (
-              <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4" /> Saved!</span>
-            ) : (
-              <span className="flex items-center gap-1.5"><Plus className="w-4 h-4" /> Add Job</span>
-            )}
+            {isPending
+              ? <span className="w-4 h-4 border-2 border-muted/30 border-t-foreground rounded-full animate-spin" />
+              : submitted
+                ? <><CheckCircle2 className="w-4 h-4 text-emerald-400" /> Added!</>
+                : <><Plus className="w-4 h-4" /> Add Job</>}
           </LiquidButton>
         </form>
-        {urlError && <p className="text-xs text-rose-500 mt-2 flex items-center gap-1">⚠ {urlError}</p>}
-        <p className="text-[10px] text-muted-foreground mt-2 flex items-center gap-1">
-          <Zap className="w-3 h-3 text-amber-500" />
-          Tracking params stripped · Duplicates blocked · Visible to friends
-        </p>
+        {urlError && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <Zap className="w-3.5 h-3.5 shrink-0" />
+            <span>{urlError}</span>
+            {urlError.includes("already") && (
+              <span className="text-muted-foreground ml-1">· Tracking params stripped · Duplicates blocked · Visible to friends</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Stats */}
@@ -219,50 +241,97 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Two-column layout */}
+      {/* Two-column layout — Friend Activity (big) + My Applications (sidebar) */}
       <div className="grid lg:grid-cols-5 gap-6">
 
-        {/* My Applications */}
+        {/* ── Friend Activity (primary) ─────────────────────── */}
         <div className="lg:col-span-3 glass-card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Briefcase className="w-4 h-4 text-primary" /> My Applications
-            </h2>
-            <button onClick={refresh} className="text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
+          <div className="flex items-center gap-2 mb-4">
+            <Users className="w-4 h-4 text-primary" />
+            <h2 className="text-sm font-semibold text-foreground">Friend Activity</h2>
+            {friendActivity.length > 0 && (
+              <span className="ml-1 text-[10px] text-primary bg-primary/10 px-2 py-0.5 rounded-full">
+                {friendActivity.length}
+              </span>
+            )}
+            <button onClick={refresh} className="ml-auto text-muted-foreground hover:text-foreground transition-colors" title="Refresh">
               <RefreshCw className={cn("w-3.5 h-3.5", loadingData && "animate-spin")} />
             </button>
           </div>
 
-          {loadingData ? (
-            <div className="space-y-2">
-              {[1,2,3].map((i) => (
-                <div key={i} className="h-14 rounded-xl bg-muted/30 animate-pulse" />
+          {/* Friend filter chips */}
+          {uniqueFriends.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              <button
+                onClick={() => setSelectedFriend(null)}
+                className={cn(
+                  "px-2.5 py-1 rounded-full text-xs font-medium transition-all",
+                  selectedFriend === null ? "bg-primary text-white" : "bg-muted/50 text-muted-foreground hover:text-foreground"
+                )}
+              >
+                All
+              </button>
+              {uniqueFriends.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setSelectedFriend(f.id === selectedFriend ? null : f.id)}
+                  className={cn(
+                    "px-2.5 py-1 rounded-full text-xs font-medium transition-all flex items-center gap-1.5",
+                    selectedFriend === f.id ? "bg-primary text-white" : "bg-muted/50 text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <span className="w-4 h-4 rounded-full bg-gradient-to-br from-violet-400 to-indigo-600 flex items-center justify-center text-white text-[8px] font-bold shrink-0">
+                    {f.username[0].toUpperCase()}
+                  </span>
+                  {f.username}
+                  {selectedFriend === f.id && <X className="w-3 h-3 ml-0.5" />}
+                </button>
               ))}
             </div>
-          ) : apps.length === 0 ? (
+          )}
+
+          {loadingData ? (
+            <div className="space-y-2">
+              {[1,2,3,4].map((i) => (
+                <div key={i} className="h-16 rounded-xl bg-muted/30 animate-pulse" />
+              ))}
+            </div>
+          ) : filteredActivity.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <div className="w-12 h-12 rounded-2xl bg-muted/50 flex items-center justify-center mb-3">
-                <Briefcase className="w-6 h-6 text-muted-foreground/40" />
+                <Users className="w-6 h-6 text-muted-foreground/40" />
               </div>
-              <p className="text-sm font-medium text-muted-foreground">No applications yet</p>
-              <p className="text-xs text-muted-foreground/60 mt-1">Paste a job URL above to get started</p>
+              <p className="text-sm font-medium text-muted-foreground">
+                {friendActivity.length === 0 ? "No friend activity yet" : "No applications from this friend"}
+              </p>
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                {friendActivity.length === 0 ? "Add friends to see their applications here" : "They haven't added any yet"}
+              </p>
             </div>
           ) : (
             <div className="space-y-1.5">
-              {apps.slice(0, 8).map((app) => (
-                <div key={app.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-muted/40 transition-colors group cursor-pointer">
-                  <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-400/20 to-indigo-600/20 border border-border flex items-center justify-center text-sm font-bold text-foreground/60 shrink-0">
-                    {(app.company_name ?? "?")[0]}
+              {filteredActivity.map((app) => (
+                <div key={app.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-muted/40 transition-colors group">
+                  {/* Friend avatar */}
+                  <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-violet-400 to-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                    {(app.profiles?.username ?? "?")[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{app.company_name ?? "Unknown company"}</p>
-                    <p className="text-xs text-muted-foreground truncate">{app.role ?? (() => { try { return new URL(app.canonical_url).hostname } catch { return app.canonical_url } })()}</p>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-xs font-semibold text-foreground">{app.profiles?.username}</span>
+                      <ChevronRight className="w-3 h-3 text-muted-foreground/40" />
+                      <span className="text-xs text-muted-foreground truncate">{app.company_name ?? "a company"}</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {app.role ?? (() => { try { return new URL(app.canonical_url).hostname } catch { return app.canonical_url } })()}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className={cn("text-[10px] font-medium px-2 py-0.5 rounded-full", statusColors[app.status])}>
+                    {/* Status badge — visible to friends */}
+                    <span className={cn("text-[10px] font-medium px-2 py-0.5 rounded-full shrink-0", statusColors[app.status])}>
                       {statusLabel[app.status]}
                     </span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-[10px] text-muted-foreground hidden sm:block">
                       {new Date(app.created_at).toLocaleDateString("en-IN", { month: "short", day: "numeric" })}
                     </span>
                     <a href={app.raw_url} target="_blank" rel="noopener noreferrer"
@@ -272,63 +341,67 @@ export default function DashboardPage() {
                   </div>
                 </div>
               ))}
-              {apps.length > 8 && (
-                <button className="w-full text-xs text-primary hover:text-primary/80 py-2 transition-colors">
-                  View all {apps.length} applications →
-                </button>
-              )}
             </div>
           )}
         </div>
 
-        {/* Right column */}
+        {/* ── Right column ─────────────────────────────────── */}
         <div className="lg:col-span-2 space-y-4">
 
-          {/* Friend Activity */}
+          {/* My Applications (compact with inline status changer) */}
           <div className="glass-card p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <Users className="w-4 h-4 text-primary" />
-              <h2 className="text-sm font-semibold text-foreground">Friend Activity</h2>
-              {friendActivity.length > 0 && (
-                <span className="ml-auto text-[10px] text-primary bg-primary/10 px-2 py-0.5 rounded-full">
-                  {friendActivity.length} new
-                </span>
-              )}
+            <div className="flex items-center gap-2 mb-3">
+              <Briefcase className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">My Applications</h2>
+              <span className="ml-auto text-[10px] text-muted-foreground">{apps.length} total</span>
             </div>
 
             {loadingData ? (
               <div className="space-y-2">
-                {[1,2].map((i) => <div key={i} className="h-12 rounded-xl bg-muted/30 animate-pulse" />)}
+                {[1,2,3].map((i) => <div key={i} className="h-11 rounded-xl bg-muted/30 animate-pulse" />)}
               </div>
-            ) : friendActivity.length === 0 ? (
+            ) : apps.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 text-center">
-                <Users className="w-8 h-8 text-muted-foreground/30 mb-2" />
-                <p className="text-xs font-medium text-muted-foreground">No activity yet</p>
-                <p className="text-[11px] text-muted-foreground/60 mt-1">Add friends to see their applications</p>
+                <Briefcase className="w-8 h-8 text-muted-foreground/30 mb-2" />
+                <p className="text-xs text-muted-foreground">No applications yet</p>
+                <p className="text-[11px] text-muted-foreground/60 mt-0.5">Paste a URL above ↑</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {friendActivity.slice(0, 5).map((app) => (
-                  <div key={app.id} className="flex items-start gap-3 p-2.5 rounded-xl hover:bg-muted/40 cursor-pointer transition-colors group">
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-400 to-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                      {(app.profiles?.username ?? "?")[0].toUpperCase()}
+              <div className="space-y-1">
+                {apps.slice(0, 10).map((app) => (
+                  <div key={app.id} className="flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-muted/40 transition-colors group">
+                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-400/20 to-indigo-600/20 border border-border flex items-center justify-center text-xs font-bold text-foreground/60 shrink-0">
+                      {(app.company_name ?? "?")[0]}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-foreground">{app.profiles?.username}</p>
-                      <p className="text-[11px] text-muted-foreground truncate">
-                        Applied to <span className="text-foreground font-medium">{app.company_name ?? "a company"}</span>
-                        {app.role && <> · {app.role}</>}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {new Date(app.created_at).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" })}
-                      </p>
+                      <p className="text-xs font-medium text-foreground truncate">{app.company_name ?? "Unknown"}</p>
                     </div>
+                    {/* Inline status changer */}
+                    <select
+                      value={app.status}
+                      disabled={updatingId === app.id}
+                      onChange={(e) => handleStatusChange(app.id, e.target.value)}
+                      className={cn(
+                        "text-[10px] font-medium px-2 py-0.5 rounded-full border-0 outline-none cursor-pointer transition-all shrink-0",
+                        statusColors[app.status],
+                        updatingId === app.id && "opacity-50"
+                      )}
+                    >
+                      {allStatuses.map((s) => (
+                        <option key={s} value={s}>{statusLabel[s]}</option>
+                      ))}
+                    </select>
                     <a href={app.raw_url} target="_blank" rel="noopener noreferrer"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0 mt-0.5">
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0">
+                      <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
                 ))}
+                {apps.length > 10 && (
+                  <p className="text-center text-[10px] text-muted-foreground pt-1">
+                    +{apps.length - 10} more · see Profile for full list
+                  </p>
+                )}
               </div>
             )}
           </div>
