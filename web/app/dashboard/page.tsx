@@ -388,7 +388,7 @@ export default function DashboardPage() {
                       )}
                     >
                       {allStatuses.map((s) => (
-                        <option key={s} value={s}>{statusLabel[s]}</option>
+                        <option key={s} value={s} className="text-foreground bg-background">{statusLabel[s]}</option>
                       ))}
                     </select>
                     <a href={app.raw_url} target="_blank" rel="noopener noreferrer"

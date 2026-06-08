@@ -232,7 +232,7 @@ export default function ProfilePage() {
                       )}
                     >
                       {Object.entries(statusLabel).map(([k, v]) => (
-                        <option key={k} value={k}>{v}</option>
+                        <option key={k} value={k} className="text-foreground bg-background">{v}</option>
                       ))}
                     </select>
                     <span className="text-[10px] text-muted-foreground">
